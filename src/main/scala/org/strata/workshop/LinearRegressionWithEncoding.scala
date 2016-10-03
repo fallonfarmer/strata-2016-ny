@@ -45,7 +45,8 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
 
 object LinearRegressionWithEncoding {
-
+  
+  // creates schema for Housing data set
   case class X(
                 id: String ,price: Double, lotsize: Double, bedrooms: Double,
                 bathrms: Double,stories: Double, driveway: String,recroom: String,
@@ -56,6 +57,7 @@ object LinearRegressionWithEncoding {
    Logger.getLogger("org").setLevel(Level.OFF)
    Logger.getLogger("akka").setLevel(Level.OFF)
 
+   // read in data set from file
    var input = "data/Housing.csv"
    if (args.length > 0) {
      input = args(0)
@@ -69,19 +71,23 @@ object LinearRegressionWithEncoding {
       
   import spark.implicits._
 
+  // create RDD from data set
   val data = spark.sparkContext.textFile(input)
-      .map(_.split(","))
+      .map(_.split(",")) // split by comma
       .map( x => ( X(
                  x(0), x(1).toDouble, x(2).toDouble, x(3).toDouble, x(4).toDouble, x(5).toDouble,
-                 x(6), x(7), x(8), x(9), x(10), x(11).toDouble, x(12) )))
-      .toDF()
+                 x(6), x(7), x(8), x(9), x(10), x(11).toDouble, x(12) )))  //specify data ypes for quantitative columns
+      .toDF() // convert RDD to spark dataframe
 
+   // specify categorical columns to encode
    val categoricalVariables = Array("driveway","recroom", "fullbase", "gashw", "airco", "prefarea")
 
+  // create index columns of categorical variables to transform without changing originals  
   val categoricalIndexers: Array[org.apache.spark.ml.PipelineStage] =
             categoricalVariables.map(i => new StringIndexer()
             .setInputCol(i).setOutputCol(i+"Index"))
 
+  // encode the indexed categorical columns
   val categoricalEncoders: Array[org.apache.spark.ml.PipelineStage] =
             categoricalVariables.map(e => new OneHotEncoder()
             .setInputCol(e + "Index").setOutputCol(e + "Vec"))
@@ -93,7 +99,7 @@ object LinearRegressionWithEncoding {
              "gashwVec","aircoVec", "prefareaVec"))
             .setOutputCol("features")
 
-
+   // instantiate linear regression model with parameters
    val lr = new LinearRegression()
             .setLabelCol("price")
             .setFeaturesCol("features")
@@ -102,13 +108,14 @@ object LinearRegressionWithEncoding {
            // .setRegParam(0.2)
             //  .setFitIntercept(true)
 
-
+  // hyptertuning model parameters
   val paramGrid = new ParamGridBuilder()
             .addGrid(lr.regParam, Array(0.1, 0.01, 0.001, 0.0001, 1.0))
             .addGrid(lr.fitIntercept)
             .addGrid(lr.elasticNetParam, Array(0.0, 1.0))
             .build()
-
+  
+  // build pipeline
   val steps = categoricalIndexers ++
               categoricalEncoders ++
               Array(assembler, lr)
@@ -116,6 +123,7 @@ object LinearRegressionWithEncoding {
   val pipeline = new Pipeline()
             .setStages(steps)
 
+   // cross validation
    val cv = new CrossValidator()
      .setEstimator(pipeline)
      .setEvaluator(new RegressionEvaluator()
@@ -123,6 +131,7 @@ object LinearRegressionWithEncoding {
      .setEstimatorParamMaps(paramGrid)
      .setNumFolds(5)
 
+  // option instead of cross validation, only one split of data
   /** val tvs = new TrainValidationSplit()
     * .setEstimator( pipeline )
     * .setEvaluator( new RegressionEvaluator()
@@ -130,13 +139,15 @@ object LinearRegressionWithEncoding {
     * .setEstimatorParamMaps(paramGrid)
     * .setTrainRatio(0.75)*/
 
+  // randomly split data into train and test sets
   val Array(training, test) = data.randomSplit(Array(0.75, 0.25), seed = 12345)
-
+  
+  // fit linear regression model to training data using cross validation
   val model = cv.fit {
     training
   }
 
-
+// use test data to evaluate regression with RMSE and R2
   //val holdout = model.transform(test).select("prediction","price")
    val holdout = model.transform(test).select("prediction", "price").orderBy(abs(col("prediction")-col("price")))
    holdout.show
